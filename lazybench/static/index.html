@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>延迟入仓工作台</title>
+<style>
+  :root { --ink:#1c2333; --mut:#5b6474; --line:#dde2ea; --bg:#f6f7f9; --card:#fff;
+          --ok:#1a7f4b; --warn:#a05a00; --bad:#b3261e; --info:#175cd3; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;
+         color:var(--ink); background:var(--bg); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:10px 20px;
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  main { padding:16px 20px; display:grid; gap:16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  section h2 { font-size:14px; margin:0 0 10px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:600; white-space:nowrap; }
+  button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 10px;
+           cursor:pointer; font-size:13px; }
+  button:hover { background:#eef2f7; }
+  button.primary { background:var(--info); border-color:var(--info); color:#fff; }
+  input, select { border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:13px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .card .k { color:var(--mut); font-size:12px; }
+  .card .v { font-size:18px; font-weight:600; margin-top:2px; }
+  .tag { display:inline-block; border-radius:10px; padding:1px 8px; font-size:12px; white-space:nowrap; }
+  .t-ok { background:#e3f4ea; color:var(--ok); } .t-warn { background:#fdf0dd; color:var(--warn); }
+  .t-bad { background:#fbe7e5; color:var(--bad); } .t-info { background:#e6effc; color:var(--info); }
+  .t-mut { background:#eef0f3; color:var(--mut); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .bar { height:8px; border-radius:4px; background:#eef0f3; overflow:hidden; min-width:80px; }
+  .bar > div { height:100%; background:var(--info); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:1100px){ .grid2 { grid-template-columns:1fr; } }
+  .muted { color:var(--mut); } .small { font-size:12px; }
+  #toast { position:fixed; right:16px; bottom:16px; display:grid; gap:8px; z-index:9; }
+  .toast { background:#232a38; color:#fff; padding:8px 14px; border-radius:8px; font-size:13px;
+           max-width:420px; box-shadow:0 4px 14px rgba(0,0,0,.25); }
+  .toast.err { background:var(--bad); }
+  details { margin-top:4px; } summary { cursor:pointer; color:var(--mut); font-size:12px; }
+  .segbar { display:flex; height:14px; border-radius:4px; overflow:hidden; border:1px solid var(--line); }
+  .segbar div { height:100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>延迟入仓工作台</h1>
+  <select id="ds"></select>
+  <button onclick="refresh()">刷新</button>
+  <span class="muted small" id="dsmeta"></span>
+</header>
+<main>
+  <section>
+    <h2>数据集 / 演示源</h2>
+    <div class="row">
+      <input id="srcpath" size="34" placeholder="源 CSV 路径" >
+      <input id="srcrows" size="8" value="100000" title="行数">
+      <button onclick="genSource()">生成演示源</button>
+      <button onclick="mutate('append')">源追加行</button>
+      <button onclick="mutate('delete')">源中间删行</button>
+      <button onclick="mutate('edit')">源改值</button>
+      <span class="muted small">（变更源用于演示“来源可变性”的影响）</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="newname" size="14" placeholder="数据集名">
+      <label class="small"><input type="checkbox" id="keepsnap" checked> 保存源副本（快照）</label>
+      <input id="prefetch" size="24" placeholder="预取列（逗号分隔，可空）" title="一次多读一些列">
+      <button class="primary" onclick="createDs()">导入（仅行索引+哈希）</button>
+    </div>
+  </section>
+
+  <section id="ovsec" style="display:none">
+    <h2>概览</h2>
+    <div class="cards" id="cards"></div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <div class="small muted">存储构成（字节）</div>
+        <div class="segbar" id="storagebar"></div>
+        <div class="small" id="storagelegend"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid2" id="main2" style="display:none">
+    <section>
+      <h2>列（当前结构版本）· 点击看来源</h2>
+      <table id="coltable">
+        <thead><tr><th>列</th><th>状态</th><th>进度</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" style="margin-top:8px">
+        <button onclick="buildAll()">补建全部缺失列</button>
+        <span class="muted small">补建按行索引+行哈希对齐，绝不按变化后的行号拼接</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>查询（快照隔离 · 行过滤在查询时生效）</h2>
+      <div class="row" id="qcols"></div>
+      <div class="row" style="margin-top:8px">
+        <select id="fcol"></select>
+        <select id="fop"><option>eq</option><option>ne</option><option>gt</option><option>ge</option><option>lt</option><option>le</option><option>contains</option></select>
+        <input id="fval" size="10" placeholder="值">
+        <button onclick="addFilter()">添加并启用过滤</button>
+        <button onclick="clearFilter()">不过滤</button>
+        <input id="qlimit" size="6" value="20" title="limit">
+        <button class="primary" onclick="runQuery()">查询</button>
+      </div>
+      <div class="small muted" id="qmeta"></div>
+      <div style="max-height:300px;overflow:auto;margin-top:6px">
+        <table id="qresult"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid2" id="main3" style="display:none">
+    <section>
+      <h2>源文件与结构版本</h2>
+      <div id="srcinfo" class="small"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="newsrc" size="34" placeholder="替换源路径">
+        <button onclick="replaceSource()">替换源（新结构版本）</button>
+      </div>
+      <table id="svtable" style="margin-top:8px">
+        <thead><tr><th>版本</th><th>行数</th><th>来源哈希</th><th>快照</th><th>说明</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <details><summary>旧结构版本的已发布列（旧补建结果，可识别、不混用）</summary>
+        <table id="prevtable"><thead><tr><th>列</th><th>sv</th><th>构建</th><th>校验和</th><th>构建时间</th></tr></thead><tbody></tbody></table>
+      </details>
+      <details><summary>隔离区（版本竞争失败的补建段）</summary>
+        <table id="qtable"><thead><tr><th>文件</th><th>字节</th></tr></thead><tbody></tbody></table>
+      </details>
+    </section>
+
+    <section>
+      <h2>构建任务 / 对照全量导入</h2>
+      <table id="buildtable">
+        <thead><tr><th>构建</th><th>列</th><th>来源</th><th>状态</th><th>进度</th><th>耗时</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" onclick="fullImport()">全量导入（急切基线）</button>
+        <button onclick="doCompare()">对照全量导入</button>
+        <button onclick="gc()">回收旧段</button>
+      </div>
+      <div class="small" id="fimeta" style="margin-top:6px"></div>
+      <div id="compare" style="margin-top:6px"></div>
+    </section>
+  </div>
+
+  <section id="evsec" style="display:none">
+    <h2>事件（审计）</h2>
+    <table id="events"><thead><tr><th>时间</th><th>类型</th><th>详情</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+let DS = null, OV = null;
+const $ = id => document.getElementById(id);
+const fmtB = n => n==null?'-':(n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KiB':n<1073741824?(n/1048576).toFixed(1)+' MiB':(n/1073741824).toFixed(2)+' GiB');
+const fmtMs = n => n==null?'-':(n<1000?n+' ms':(n/1000).toFixed(2)+' s');
+const short = s => s ? s.slice(0,10) : '-';
+const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, body){
+  const r = await fetch(path, body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j = await r.json();
+  if(!r.ok){ toast(j.error||r.statusText, true); throw new Error(j.error); }
+  return j;
+}
+function toast(msg, err){
+  const d = document.createElement('div');
+  d.className = 'toast'+(err?' err':''); d.textContent = msg;
+  $('toast').appendChild(d); setTimeout(()=>d.remove(), 5000);
+}
+
+async function loadList(){
+  const j = await api('/api/datasets');
+  $('ds').innerHTML = '<option value="">选择数据集…</option>' +
+    j.datasets.map(d=>`<option ${d.name===DS?'selected':''} value="${esc(d.name)}">${esc(d.name)}（${d.row_count} 行 · sv${d.structure_version}）</option>`).join('');
+}
+$('ds').onchange = e => { DS = e.target.value || null; refresh(); };
+
+async function genSource(){
+  const j = await api('/api/demo/source', {rows:+$('srcrows').value, path:$('srcpath').value||undefined});
+  $('srcpath').value = j.path; $('newsrc').value = j.path;
+  toast(`已生成 ${j.rows} 行（${fmtB(j.bytes)}）`);
+}
+async function mutate(mode){
+  const p = $('srcpath').value; if(!p) return toast('先填写源路径', true);
+  const j = await api('/api/demo/mutate', {path:p, mode});
+  toast(`源已变更：${j.detail}`); refresh();
+}
+async function createDs(){
+  const name = $('newname').value.trim(), path = $('srcpath').value;
+  if(!name || !path) return toast('填写数据集名与源路径', true);
+  const prefetch = $('prefetch').value.split(',').map(s=>s.trim()).filter(Boolean);
+  await api('/api/datasets', {name, path, keep_snapshot:$('keepsnap').checked, prefetch});
+  DS = name; await loadList(); refresh();
+  toast('导入完成（仅行索引+哈希'+(prefetch.length?` + 预取 ${prefetch.length} 列`:'')+'）');
+}
+
+async function refresh(){
+  if(!DS){ ['ovsec','main2','main3','evsec'].forEach(i=>$(i).style.display='none'); return; }
+  OV = await api('/api/datasets/'+DS);
+  renderAll();
+}
+
+function statusTag(c){
+  if(c.status==='materialized') return '<span class="tag t-ok">已物化</span>';
+  if(c.status==='running') return '<span class="tag t-info">构建中</span>';
+  if(c.status==='paused') return '<span class="tag t-warn">已暂停</span>';
+  return '<span class="tag t-mut">未入仓</span>';
+}
+
+function renderAll(){
+  const o = OV, cur = o.current;
+  ['ovsec','main2','main3','evsec'].forEach(i=>$(i).style.display='');
+  const mat = o.columns.filter(c=>c.status==='materialized').length;
+  const mut = o.mutation;
+  $('dsmeta').textContent = `sv${cur.structure_version} · gen${cur.generation} · ${cur.row_count} 行`;
+  $('cards').innerHTML = [
+    ['结构版本', 'sv'+cur.structure_version],
+    ['清单代', 'gen'+cur.generation],
+    ['行数', cur.row_count.toLocaleString()],
+    ['列', `${mat} / ${cur.schema.length} 已物化`],
+    ['源副本', cur.has_snapshot?'<span class="tag t-ok">有快照</span>':'<span class="tag t-warn">无快照（引用外部源）</span>'],
+    ['外部源状态', mut.changed===null?'<span class="tag t-mut">未知</span>':mut.changed?'<span class="tag t-bad">已变更</span>':'<span class="tag t-ok">未变更</span>'],
+  ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  const s = o.storage, cats = [['snapshot','源副本','#175cd3'],['row_index','行索引','#7a5af8'],['segments','列段','#1a7f4b'],['staging','在途','#f79009'],['fullimport','全量基线','#0e7490'],['quarantine','隔离','#b3261e'],['metadata','元数据','#98a2b3']];
+  const tot = Math.max(1, s.total);
+  $('storagebar').innerHTML = cats.map(([k,,c])=>`<div style="width:${(100*s[k]/tot).toFixed(2)}%;background:${c}" title="${k} ${fmtB(s[k])}"></div>`).join('');
+  $('storagelegend').innerHTML = cats.map(([k,l,c])=>`<span style="color:${c}">■</span> ${l} ${fmtB(s[k])}`).join(' · ') + ` · 合计 ${fmtB(s.total)}`;
+
+  // columns
+  $('coltable').querySelector('tbody').innerHTML = o.columns.map(c=>{
+    let prog = '', act = '';
+    if(c.status==='materialized'){
+      prog = `<span class="mono">${fmtB(c.bytes)} · ${fmtMs(c.duration_ms)}</span>
+        <details><summary>来源</summary><div class="mono small">
+        构建 ${c.build_id}（${c.origin}）<br>sv${c.structure_version} · 源哈希 ${short(c.source_hash)}<br>
+        ${c.from_snapshot?'读自快照':'读自外部源'} · 校验 ${short(c.checksum)}<br>${new Date(c.built_at).toLocaleTimeString()}</div></details>`;
+      act = '';
+    } else if(c.status==='running'){
+      const p = c.row_count? Math.round(100*c.rows_done/c.row_count):0;
+      prog = `<div class="bar"><div style="width:${p}%"></div></div><span class="small">${c.rows_done}/${c.row_count}</span>`;
+      act = `<button onclick="stopBuild('${c.build_id}')">停止</button>`;
+    } else if(c.status==='paused'){
+      const p = c.row_count? Math.round(100*c.rows_done/c.row_count):0;
+      prog = `<div class="bar"><div style="width:${p}%"></div></div><span class="small">${c.rows_done}/${c.row_count}</span>`;
+      act = `<button onclick="resumeBuild('${c.build_id}')">恢复</button>`;
+    } else {
+      prog = c.last_build && c.last_build.status==='aborted'
+        ? `<span class="tag t-bad">上次失败</span> <span class="small muted">${esc(c.last_build.error||'')}</span>` : '';
+      act = `<button onclick="buildCol('${esc(c.name)}')">补建</button>`;
+    }
+    return `<tr><td class="mono">${esc(c.name)}</td><td>${statusTag(c)}</td><td>${prog}</td><td>${act}</td></tr>`;
+  }).join('');
+
+  // query panel
+  $('qcols').innerHTML = cur.schema.map(c=>{
+    const m = o.columns.find(x=>x.name===c);
+    const ok = m && m.status==='materialized';
+    return `<label class="small" title="${ok?'':'未物化，查询将列为缺失'}"><input type="checkbox" class="qc" value="${esc(c)}" ${ok?'checked':''}> ${esc(c)}</label>`;
+  }).join('');
+  $('fcol').innerHTML = cur.schema.map(c=>`<option>${esc(c)}</option>`).join('');
+
+  // builds
+  $('buildtable').querySelector('tbody').innerHTML = o.builds.slice().reverse().map(b=>{
+    const tag = {running:'t-info',paused:'t-warn',done:'t-ok',stale:'t-bad',aborted:'t-bad'}[b.status]||'t-mut';
+    const act = b.status==='running'?`<button onclick="stopBuild('${b.id}')">停止</button>`
+              : b.status==='paused'?`<button onclick="resumeBuild('${b.id}')">恢复</button>`:'';
+    return `<tr><td class="mono">${b.id}</td><td>${esc(b.column)}</td><td>${b.origin}</td>
+      <td><span class="tag ${tag}">${b.status}</span></td>
+      <td class="mono">${b.rows_done}/${b.row_count}</td><td class="mono">${fmtMs(b.duration_ms)}</td><td>${act}</td></tr>`;
+  }).join('');
+
+  // source / structures
+  $('srcinfo').innerHTML = `源 <span class="mono">${esc(cur.source_path)}</span>（${fmtB(cur.source_size)}）<br>
+    导入时哈希 <span class="mono">${short(cur.source_hash)}</span> · ${esc(o.mutation.detail)}`;
+  $('newsrc').value = $('newsrc').value || cur.source_path;
+  $('svtable').querySelector('tbody').innerHTML = o.structures.map(s=>
+    `<tr><td>sv${s.version}${s.version===cur.structure_version?' ←当前':''}</td><td>${s.row_count}</td>
+     <td class="mono">${short(s.source_hash)}</td><td>${s.has_snapshot?'有':'无'}</td><td class="small">${esc(s.note)}</td></tr>`).join('');
+  $('prevtable').querySelector('tbody').innerHTML = o.previous_columns.map(c=>
+    `<tr><td class="mono">${esc(c.name)}</td><td>sv${c.structure_version}</td><td class="mono">${c.build_id}（${c.origin}）</td>
+     <td class="mono">${short(c.checksum)}</td><td class="small">${new Date(c.built_at).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan=5 class="muted">无</td></tr>';
+  $('qtable').querySelector('tbody').innerHTML = o.quarantine.map(q=>
+    `<tr><td class="mono">${esc(q.file)}</td><td class="mono">${fmtB(q.bytes)}</td></tr>`).join('') || '<tr><td colspan=2 class="muted">空</td></tr>';
+
+  // full import
+  const fi = o.full_import;
+  $('fimeta').innerHTML = fi ? `全量导入：${fi.status}${fi.status==='running'?`（${fi.columns_done}/${fi.columns_total}，当前 ${esc(fi.current_column||'')}）`:''}${fi.total_ms?` · 总耗时 ${fmtMs(fi.total_ms)}`:''}${fi.error?` · ${esc(fi.error)}`:''}` : '尚未全量导入';
+
+  // events
+  $('events').querySelector('tbody').innerHTML = o.events.map(e=>
+    `<tr><td class="small mono">${new Date(e.ts).toLocaleTimeString()}</td><td><span class="tag t-mut">${e.type}</span></td>
+     <td class="small mono">${esc(JSON.stringify({...e,ts:undefined,type:undefined}))}</td></tr>`).join('');
+}
+
+async function buildCol(c){ await api(`/api/datasets/${DS}/columns/${c}/build`, {}); refresh(); }
+async function buildAll(){ for(const c of OV.columns.filter(x=>x.status==='missing')) await api(`/api/datasets/${DS}/columns/${c.name}/build`, {}); refresh(); }
+async function stopBuild(id){ await api(`/api/datasets/${DS}/builds/${id}/stop`, {}); setTimeout(refresh, 300); }
+async function resumeBuild(id){ await api(`/api/datasets/${DS}/builds/${id}/resume`, {}); refresh(); }
+async function replaceSource(){
+  const j = await api(`/api/datasets/${DS}/source`, {path:$('newsrc').value});
+  toast(j.changed?`源已替换 → sv${j.structure_version}（${j.old_rows}→${j.new_rows} 行）`:'内容相同，未变更');
+  refresh();
+}
+async function fullImport(){ await api(`/api/datasets/${DS}/full-import`, {}); toast('全量导入已启动'); refresh(); }
+async function gc(){ const j = await api(`/api/datasets/${DS}/gc`, {}); toast(`回收 ${j.removed.length} 个旧段`); refresh(); }
+
+async function addFilter(){
+  await api(`/api/datasets/${DS}/filters`, {column:$('fcol').value, op:$('fop').value, value:$('fval').value});
+  toast('过滤规则已启用（仅查询时生效，不改写数据）');
+}
+async function clearFilter(){ await api(`/api/datasets/${DS}/filters/activate`, {id:null}); toast('已清除过滤'); }
+
+async function runQuery(){
+  const cols = [...document.querySelectorAll('.qc:checked')].map(x=>x.value);
+  const j = await api(`/api/datasets/${DS}/query`, {columns:cols, limit:+$('qlimit').value});
+  $('qmeta').textContent = `gen${j.generation} · sv${j.structure_version} · 命中 ${j.matched} 行 · 返回 ${j.returned} · ${j.elapsed_ms} ms`
+    + (j.missing_columns.length?` · 未物化：${j.missing_columns.join(',')}`:'')
+    + (j.filter?` · 过滤 ${j.filter.column} ${j.filter.op} ${j.filter.value}`:'');
+  $('qresult').querySelector('thead').innerHTML = `<tr><th>row_id</th>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr>`;
+  $('qresult').querySelector('tbody').innerHTML = j.rows.map(r=>
+    `<tr><td class="mono">${r.row_id}</td>${cols.map(c=>`<td>${esc(r.values[c]??'')}</td>`).join('')}</tr>`).join('');
+}
+
+async function doCompare(){
+  const j = await api(`/api/datasets/${DS}/compare`);
+  $('compare').innerHTML = `<div class="row"><b>对照结果：</b>${j.all_match?'<span class="tag t-ok">已物化列全部一致</span>':'<span class="tag t-bad">存在错位/差异</span>'}
+    <span class="small muted">待补建 ${j.pending_count} 列 · 不一致 ${j.mismatch_count} 列</span></div>
+    <table><thead><tr><th>列</th><th>延迟补建</th><th>全量基线</th><th>状态</th></tr></thead><tbody>${
+    j.columns.map(c=>`<tr><td class="mono">${esc(c.column)}</td>
+      <td>${c.lazy?`<span class="mono">${short(c.lazy_checksum)}</span>`:'—'}</td>
+      <td>${c.full?`<span class="mono">${short(c.full_checksum)}</span>`:'—'}</td>
+      <td>${c.status==='match'?'<span class="tag t-ok">一致</span>':c.status==='pending'?'<span class="tag t-mut">待补建</span>':'<span class="tag t-bad">不一致</span>'}${c.mismatches?`<div class="small mono">${esc(JSON.stringify(c.mismatches))}</div>`:''}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+loadList();
+setInterval(()=>{ if(OV && OV.builds.some(b=>b.status==='running')) refresh(); }, 1000);
+setInterval(()=>{ if(OV && OV.full_import && OV.full_import.status==='running') refresh(); }, 1000);
+</script>
+</body>
+</html>
